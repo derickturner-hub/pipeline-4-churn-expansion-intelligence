@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/derickturner-hub/enterprise-revops-churn-expansion-engine/schemas/telemetry-inbound-schema.json",
+  "title": "Inbound Account Telemetry Payload",
+  "description": "Validation schema for raw incoming product usage and customer account telemetry events.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "timestamp",
+    "account"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "account": {
+      "type": "object",
+      "required": [
+        "account_id",
+        "account_name",
+        "arr_usd",
+        "contract_end_date",
+        "metrics"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string"
+        },
+        "account_name": {
+          "type": "string"
+        },
+        "csm_owner_email": {
+          "type": "string",
+          "format": "email"
+        },
+        "arr_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "contract_end_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "metrics": {
+          "type": "object",
+          "required": [
+            "active_users_30d",
+            "licensed_seats",
+            "login_frequency_weekly",
+            "open_support_tickets_p1",
+            "nps_score"
+          ],
+          "properties": {
+            "active_users_30d": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "licensed_seats": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "login_frequency_weekly": {
+              "type": "number",
+              "minimum": 0
+            },
+            "open_support_tickets_p1": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "nps_score": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "maximum": 10
+            },
+            "feature_adoption_rate_pct": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
