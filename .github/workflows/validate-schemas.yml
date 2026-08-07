@@ -1,0 +1,30 @@
+name: CI/CD Schema Guardrails Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  validate-schemas:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install AJV CLI Schema Validator
+        run: npm install -g ajv-cli ajv-formats
+
+      - name: Validate Telemetry Inbound Schema
+        run: ajv compile --spec=draft2020 -s schemas/telemetry-inbound-schema.json -c ajv-formats
+
+      - name: Validate Enriched Account Schema
+        run: ajv compile --spec=draft2020 -s schemas/account-enriched-schema.json -c ajv-formats
