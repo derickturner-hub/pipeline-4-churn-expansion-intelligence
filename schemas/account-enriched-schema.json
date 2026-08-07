@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/derickturner-hub/enterprise-revops-churn-expansion-engine/schemas/account-enriched-schema.json",
+  "title": "Enriched Account Health Payload",
+  "description": "Validation schema for fully aggregated telemetry and contract metadata prior to health scoring.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "timestamp",
+    "account",
+    "health_inputs"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "account": {
+      "type": "object",
+      "required": [
+        "account_id",
+        "account_name",
+        "arr_usd",
+        "days_until_renewal"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string"
+        },
+        "account_name": {
+          "type": "string"
+        },
+        "csm_owner_email": {
+          "type": "string",
+          "format": "email"
+        },
+        "arr_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "days_until_renewal": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "health_inputs": {
+      "type": "object",
+      "required": [
+        "seat_utilization_pct",
+        "weekly_login_avg",
+        "p1_tickets_count",
+        "nps",
+        "feature_adoption_pct"
+      ],
+      "properties": {
+        "seat_utilization_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "weekly_login_avg": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p1_tickets_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nps": {
+          "type": ["integer", "null"]
+        },
+        "feature_adoption_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
