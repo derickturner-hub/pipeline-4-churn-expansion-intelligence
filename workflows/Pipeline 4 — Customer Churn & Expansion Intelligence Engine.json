@@ -1,0 +1,518 @@
+{
+  "name": "Pipeline 4 — Customer Churn & Expansion Intelligence Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 1. Ingestion\nPOST /v1/telemetry-ingestion\nRaw account telemetry events."
+      },
+      "id": "5258fa1c-d6e9-4909-9404-ffb784a0f7b8",
+      "name": "Sticky Note 5258fa1c",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        896,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2-4. Validation & Enrichment\nInbound schema check → Contract & Usage aggregation → Enriched schema check. Failures routed to DLQ."
+      },
+      "id": "f0413bb1-7ea7-492a-b849-0737366b6c30",
+      "name": "Sticky Note f0413bb1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        896,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 5-6. Scoring & Routing\nDeterministic health matrix (max 100) → Switch gates by tier to the correct sink(s)."
+      },
+      "id": "5144dd6a-57bc-448a-85b1-0f11dd95adcd",
+      "name": "Sticky Note 5144dd6a",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        896,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 7. DLQ / Quarantine\nMalformed or invalid payloads are dumped to #telemetry-dlq with error context."
+      },
+      "id": "4b5a8f60-0ddf-458a-9264-1d99ebe3c9bb",
+      "name": "Sticky Note 4b5a8f60",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        896,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "v1/telemetry-ingestion",
+        "options": {}
+      },
+      "id": "f363652c-e96b-4c2c-8895-aea4ebdc347b",
+      "name": "Telemetry Ingestion Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        416
+      ],
+      "webhookId": "53ebf82b-d96d-463e-a759-ca2b88e2ce75"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate raw telemetry against telemetry-inbound-schema.json\nconst out = [];\nfor (const item of $input.all()) {\n  const body = item.json.body || item.json || {};\n  const account = body.account || {};\n  const metrics = account.metrics;\n  const errors = [];\n\n  if (!body.event_id) errors.push('Missing required field: event_id');\n  if (!body.timestamp) errors.push('Missing required field: timestamp');\n  if (!account.account_id) errors.push('Missing required field: account.account_id');\n  if (!account.account_name) errors.push('Missing required field: account.account_name');\n  if (account.arr_usd === undefined || account.arr_usd === null || isNaN(Number(account.arr_usd)))\n    errors.push('Missing or invalid field: account.arr_usd');\n  if (!account.contract_end_date) errors.push('Missing required field: account.contract_end_date');\n  if (!metrics || typeof metrics !== 'object') errors.push('Missing required field: account.metrics');\n\n  out.push({\n    json: {\n      valid: errors.length === 0,\n      validation_stage: 'inbound-schema',\n      validation_errors: errors,\n      event_id: body.event_id || null,\n      timestamp: body.timestamp || null,\n      account: account,\n      raw_payload: body,\n    },\n  });\n}\nreturn out;"
+      },
+      "id": "fb219fce-874e-4cb8-a0ff-68e060ed5453",
+      "name": "Inbound Schema Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "inbound-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7eb87d7a-91af-4a8a-aa1f-5cf4a0ac72d3",
+      "name": "Inbound Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enrich telemetry: renewal window + seat utilization\nconst out = [];\nfor (const item of $input.all()) {\n  const account = item.json.account || {};\n  const metrics = account.metrics || {};\n\n  // days_until_renewal\n  let days_until_renewal = null;\n  if (account.contract_end_date) {\n    const end = new Date(account.contract_end_date);\n    if (!isNaN(end.getTime())) {\n      const now = new Date();\n      days_until_renewal = Math.round((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));\n    }\n  }\n\n  // seat_utilization_pct\n  const activeUsers = Number(metrics.active_users_30d) || 0;\n  const licensedSeats = Number(metrics.licensed_seats) || 0;\n  const seat_utilization_pct = licensedSeats > 0\n    ? Math.round((activeUsers / licensedSeats) * 10000) / 100\n    : 0;\n\n  const health_inputs = {\n    account_id: account.account_id,\n    account_name: account.account_name,\n    arr_usd: Number(account.arr_usd) || 0,\n    csm_email: account.csm_email || null,\n    contract_end_date: account.contract_end_date,\n    days_until_renewal,\n    seat_utilization_pct,\n    active_users_30d: activeUsers,\n    licensed_seats: licensedSeats,\n    adoption_pct: Number(metrics.adoption_pct) || 0,\n    logins_per_week: Number(metrics.logins_per_week) || 0,\n    p1_incidents: Number(metrics.p1_incidents) || 0,\n    nps: metrics.nps === undefined || metrics.nps === null ? null : Number(metrics.nps),\n  };\n\n  out.push({\n    json: {\n      event_id: item.json.event_id,\n      timestamp: item.json.timestamp,\n      account,\n      health_inputs,\n      raw_payload: item.json.raw_payload,\n    },\n  });\n}\nreturn out;"
+      },
+      "id": "034d3ce8-ff13-4138-aa43-f9dbd7e43c20",
+      "name": "Contract & Usage Aggregator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#telemetry-dlq"
+        },
+        "text": "=:warning: *TELEMETRY QUARANTINED (DLQ)*\n*Stage:* {{ $json.validation_stage }}\n*Event ID:* {{ $json.event_id || \"unknown\" }}\n*Errors:* {{ $json.validation_errors.join(\" | \") }}\n*Payload Dump:*\n```{{ JSON.stringify($json.raw_payload) }}```",
+        "otherOptions": {}
+      },
+      "id": "ab43da5c-66ca-4dce-9aa3-a7a77abc119b",
+      "name": "DLQ: Quarantine Sink",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1344,
+        512
+      ],
+      "webhookId": "ec811274-9b97-4e65-87ef-e03a82f55efd"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate merged data against account-enriched-schema.json\nconst out = [];\nfor (const item of $input.all()) {\n  const h = item.json.health_inputs || {};\n  const errors = [];\n\n  if (!h.account_id) errors.push('Enriched: missing account_id');\n  if (!h.account_name) errors.push('Enriched: missing account_name');\n  if (h.days_until_renewal === null || h.days_until_renewal === undefined)\n    errors.push('Enriched: days_until_renewal could not be computed (invalid contract_end_date)');\n  if (h.licensed_seats <= 0) errors.push('Enriched: licensed_seats must be > 0');\n  if (h.seat_utilization_pct === null || isNaN(h.seat_utilization_pct))\n    errors.push('Enriched: seat_utilization_pct could not be computed');\n\n  out.push({\n    json: {\n      ...item.json,\n      valid: errors.length === 0,\n      validation_stage: 'account-enriched',\n      validation_errors: errors,\n      raw_payload: item.json.raw_payload,\n    },\n  });\n}\nreturn out;"
+      },
+      "id": "f777d1e2-75f6-4efc-8caf-13c1f7430b42",
+      "name": "Enriched Schema Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "enriched-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d01d5295-920e-4eb5-8a76-a89667336dce",
+      "name": "Enriched Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic health scoring (max 100)\nconst out = [];\nfor (const item of $input.all()) {\n  const h = item.json.health_inputs || {};\n\n  // Seat Utilization (max 30)\n  const su = Number(h.seat_utilization_pct) || 0;\n  let seatScore = 0;\n  if (su >= 85) seatScore = 30;\n  else if (su >= 60) seatScore = 20;\n  else if (su >= 30) seatScore = 10;\n  else seatScore = 0;\n\n  // Adoption (max 15)\n  const adoption = Number(h.adoption_pct) || 0;\n  const adoptionScore = adoption >= 70 ? 15 : 0;\n\n  // Logins (max 10)\n  const logins = Number(h.logins_per_week) || 0;\n  const loginsScore = logins >= 5 ? 10 : 0;\n\n  // Support Health (max 25)\n  const p1 = Number(h.p1_incidents) || 0;\n  let supportScore = 0;\n  if (p1 === 0) supportScore = 25;\n  else if (p1 === 1) supportScore = 10;\n  else supportScore = 0;\n\n  // NPS (max 20)\n  const nps = h.nps === null || h.nps === undefined ? -1 : Number(h.nps);\n  let npsScore = 0;\n  if (nps >= 9) npsScore = 20;\n  else if (nps >= 7) npsScore = 12;\n  else npsScore = 0;\n\n  const health_score = seatScore + adoptionScore + loginsScore + supportScore + npsScore;\n\n  // Tier\n  let tier;\n  if (health_score < 45) tier = 'High Churn Risk';\n  else if (health_score < 75) tier = 'Stable / Monitor';\n  else tier = 'Healthy / Expansion Candidate';\n\n  // Expansion triggers\n  const expansion_triggered =\n    su >= 85 || adoption >= 80 || (h.arr_usd >= 100000 && su >= 75);\n\n  // Routing action\n  let routing_action;\n  if (health_score < 45) routing_action = 'churn_risk';\n  else if (health_score >= 75 && expansion_triggered) routing_action = 'expansion';\n  else routing_action = 'monitor';\n\n  // Risk factors (human-readable)\n  const risk_factors = [];\n  if (su < 60) risk_factors.push('Low seat utilization (' + su + '%)');\n  if (adoption < 70) risk_factors.push('Low adoption (' + adoption + '%)');\n  if (logins < 5) risk_factors.push('Low login frequency (' + logins + '/wk)');\n  if (p1 >= 2) risk_factors.push(p1 + ' open P1 incidents');\n  if (nps >= 0 && nps < 7) risk_factors.push('Detractor NPS (' + nps + ')');\n  if (h.days_until_renewal !== null && h.days_until_renewal <= 90)\n    risk_factors.push('Renewal in ' + h.days_until_renewal + ' days');\n\n  // Expansion rationale\n  const expansion_rationale = [];\n  if (su >= 85) expansion_rationale.push('High seat utilization (' + su + '%) — seats near capacity');\n  if (adoption >= 80) expansion_rationale.push('Strong adoption (' + adoption + '%)');\n  if (nps >= 9) expansion_rationale.push('Promoter NPS (' + nps + ')');\n  if (h.arr_usd >= 100000) expansion_rationale.push('Strategic ARR ($' + h.arr_usd + ')');\n\n  const scoring_breakdown = {\n    seat_utilization: seatScore,\n    adoption: adoptionScore,\n    logins: loginsScore,\n    support_health: supportScore,\n    nps: npsScore,\n    max_score: 100,\n  };\n\n  out.push({\n    json: {\n      event_id: item.json.event_id,\n      account_id: h.account_id,\n      account_name: h.account_name,\n      arr_usd: h.arr_usd,\n      csm_email: h.csm_email,\n      contract_end_date: h.contract_end_date,\n      days_until_renewal: h.days_until_renewal,\n      health_score,\n      tier,\n      routing_action,\n      expansion_triggered,\n      scoring_breakdown,\n      risk_factors,\n      expansion_rationale,\n      health_inputs: h,\n    },\n  });\n}\nreturn out;"
+      },
+      "id": "d7876f69-506c-4faf-838e-1830aae4da91",
+      "name": "Health Scoring Matrix",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.routing_action }}",
+                    "rightValue": "churn_risk",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "High Churn Risk"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.routing_action }}",
+                    "rightValue": "expansion",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Expansion Opportunity"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.routing_action }}",
+                    "rightValue": "monitor",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Stable / Monitor"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "19a5babd-290b-4f4e-b7e7-8a59aa26948b",
+      "name": "Tier Gating Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1568,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#cs-churn-alerts"
+        },
+        "text": "=:rotating_light: *HIGH CHURN RISK* — {{ $json.account_name }} ({{ $json.account_id }})\n*Health Score:* {{ $json.health_score }}/100  |  *Tier:* {{ $json.tier }}\n*ARR:* ${{ $json.arr_usd }}  |  *Renewal in:* {{ $json.days_until_renewal }} days\n*Risk Factors:* {{ $json.risk_factors.join(\" | \") }}\n*Breakdown:* seat {{ $json.scoring_breakdown.seat_utilization }} / adoption {{ $json.scoring_breakdown.adoption }} / logins {{ $json.scoring_breakdown.logins }} / support {{ $json.scoring_breakdown.support_health }} / nps {{ $json.scoring_breakdown.nps }}\n*CSM:* {{ $json.csm_email }}",
+        "otherOptions": {}
+      },
+      "id": "b877163a-1280-46ab-a9c4-de11c1ab3454",
+      "name": "Slack: Churn Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1792,
+        0
+      ],
+      "webhookId": "9cb291f7-3b4b-4da1-86b2-00e2f99d4942"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "<__PLACEHOLDER_VALUE__CRM create-task API endpoint URL__>",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  subject: \"URGENT: Churn risk mitigation — \" + $json.account_name,\n  account_id: $json.account_id,\n  priority: \"high\",\n  assignee_email: $json.csm_email,\n  health_score: $json.health_score,\n  risk_factors: $json.risk_factors,\n  due_in_days: 3\n}) }}",
+        "options": {}
+      },
+      "id": "b13e137b-17bc-442c-8796-165dbd9ca4a5",
+      "name": "CRM: Create Churn Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1792,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#account-expansion"
+        },
+        "text": "=:chart_with_upwards_trend: *EXPANSION OPPORTUNITY* — {{ $json.account_name }} ({{ $json.account_id }})\n*Health Score:* {{ $json.health_score }}/100  |  *Tier:* {{ $json.tier }}\n*ARR:* ${{ $json.arr_usd }}  |  *Renewal in:* {{ $json.days_until_renewal }} days\n*Seat Utilization:* {{ $json.health_inputs.seat_utilization_pct }}%\n*Rationale:* {{ $json.expansion_rationale.join(\" | \") }}\n*CSM:* {{ $json.csm_email }}",
+        "otherOptions": {}
+      },
+      "id": "91390464-7ac1-4a9b-823f-af529c9175b2",
+      "name": "Slack: Expansion Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1792,
+        384
+      ],
+      "webhookId": "34b37d3e-eb6f-4d3d-898f-c1b3c5b21a2c"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "<__PLACEHOLDER_VALUE__Customer Success Dashboard / data sink URL__>",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "1ed17713-0041-4e5e-a9e3-e60a59c51be6",
+      "name": "Sync: CS Dashboard Sink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1792,
+        576
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telemetry Ingestion Webhook": {
+      "main": [
+        [
+          {
+            "node": "Inbound Schema Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inbound Schema Validation": {
+      "main": [
+        [
+          {
+            "node": "Inbound Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inbound Valid?": {
+      "main": [
+        [
+          {
+            "node": "Contract & Usage Aggregator",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "DLQ: Quarantine Sink",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contract & Usage Aggregator": {
+      "main": [
+        [
+          {
+            "node": "Enriched Schema Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enriched Schema Validation": {
+      "main": [
+        [
+          {
+            "node": "Enriched Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enriched Valid?": {
+      "main": [
+        [
+          {
+            "node": "Health Scoring Matrix",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "DLQ: Quarantine Sink",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Scoring Matrix": {
+      "main": [
+        [
+          {
+            "node": "Tier Gating Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tier Gating Router": {
+      "main": [
+        [
+          {
+            "node": "Slack: Churn Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CRM: Create Churn Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack: Expansion Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sync: CS Dashboard Sink",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "78b79e53-4054-4c2c-bb0d-6ac4fa569709",
+  "meta": {
+    "instanceId": "5ca3fdfe578993803fc549d7af77d64de66ef41d7cc80f61d4fcc25d1b4e7849"
+  },
+  "nodeGroups": [],
+  "id": "8Zfqxx4fjOXM7N6N",
+  "tags": []
+}
